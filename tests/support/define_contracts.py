@@ -51,6 +51,8 @@ class RunContext:
     comparison_run_wrapper: str | None = None
     comparison_required_stderr: tuple[str, ...] = ()
     worker_count: int = 1
+    # Which race detector the race suite scores against; see --detector.
+    detector: str | None = None
 
 
 @dataclass

@@ -7,15 +7,17 @@ rocjitsu's core memory-wait diagnostics, adapted to the corpus.
 Not a plugin. This is built into the simulator's compute unit: a scoreboard
 tracks in-flight memory operations and warns when a register or LDS byte is
 touched before the operation producing it has completed. It is on by default
-(``MemoryWaitDiagnostics::Warn``), so no plugin is loaded and none is enabled;
-the only configuration is the ``memory_wait_diagnostics`` key in the config's
-compute-unit section (``vm.gpu.device``), whose values are "warn" and "off".
+(``MemoryWaitDiagnostics::Warn``), so no plugin is loaded and none is enabled.
+The only configuration is the ``memory_wait_diagnostics`` key, whose values are
+"warn" and "off" -- and it belongs to each ``compute_unit`` *component* in the
+topology, as a ``{"key", "value"}`` entry in that component's ``config`` array.
+Setting it on ``vm.gpu.device``, next to ``lds_size_kb`` and the rest, is
+silently ignored and reads exactly like a build without the feature.
 
-That makes it the third distinct consumption shape the corpus serves:
+That makes it the second distinct consumption shape the corpus serves:
 
-* ``data_hazard`` / ``race_detector``  plugin
-* ``race_detector``                    plugin
-* ``memory_wait``                      a core simulator feature, always present
+* ``data_hazard``, ``race_detector``  plugins, enabled through ``plugins``
+* ``memory_wait``                     a core simulator feature, always present
 
 Diagnostics go through ``util::Logger::warn`` prefixed ``memory-wait:``, one
 line per hazard, and the simulator caps them at ``kMaxMemoryWaitDiagnostics`` --

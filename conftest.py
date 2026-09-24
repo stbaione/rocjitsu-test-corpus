@@ -28,9 +28,18 @@ def pytest_addoption(parser):
         action="append",
         default=[],
         help=(
-            "Suite selector (iree, kernels, cts, dbt, semantics, llama). "
+            "Suite selector (iree, kernels, cts, dbt, semantics, llama, race). "
             "Repeat or pass "
             "comma-separated values."
+        ),
+    )
+    parser.addoption(
+        "--detector",
+        action="store",
+        default=None,
+        help=(
+            "Race detector the race suite scores against: "
+            "data_hazard, race_detector or memory_wait."
         ),
     )
     parser.addoption(

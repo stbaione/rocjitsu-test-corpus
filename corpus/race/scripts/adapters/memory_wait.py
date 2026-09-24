@@ -13,8 +13,8 @@ compute-unit section (``vm.gpu.device``), whose values are "warn" and "off".
 
 That makes it the third distinct consumption shape the corpus serves:
 
-* ``data_hazard`` / ``race_detector``  plugins, enabled through ``plugins``
-* ``waitcheck``                        an offline analyzer over a code object
+* ``data_hazard`` / ``race_detector``  plugin
+* ``race_detector``                    plugin
 * ``memory_wait``                      a core simulator feature, always present
 
 Diagnostics go through ``util::Logger::warn`` prefixed ``memory-wait:``, one

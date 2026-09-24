@@ -167,6 +167,42 @@ python -m pytest tests/test_corpus.py --suite race --target gfx950 --collect-onl
 A skip is never a miss. If a baseline fails, every mutant of that kernel also
 skips, because a dirty baseline says nothing about the mutant.
 
+### Comparing detectors
+
+Each run appends to `.pytest-artifacts/race/reports/<detector>-<target>.jsonl`.
+
+```bash
+python corpus/race/scripts/compare.py data_hazard race_detector memory_wait --all
+python corpus/race/scripts/compare.py data_hazard race_detector --all
+```
+
+```
+mutant                          resource data_hazard  race_detector  memory_wait
+lds_reduce.wait002              lds      ok 3         ok 1           MISS 0
+lds_war_pattern.wait002         lds      ok 3         MISS 0         MISS 0
+global_byte_eviction.memory000  global   ok 2         skip           skip
+--------------------------------------------------------------------------------
+                                         52/52        49/51          47/51
+```
+
+| cell | Means |
+|---|---|
+| `ok N` | in scope, found N hazards |
+| `MISS 0` | in scope, found nothing |
+| `skip` | outside this detector's scope, not scored |
+| `dirty` | the baseline already reported |
+| `-` | no result for this case |
+
+Denominators differ per column because skips are excluded — that is the whole
+point of capability scoping.
+
+### Results from different builds
+
+Each record carries the corpus manifest digest plus the simulator path and build
+time.
+
+---
+
 ## Artifacts
 
 Everything for a case lands in one directory:
@@ -183,7 +219,8 @@ Everything for a case lands in one directory:
 
 Configs are namespaced per detector because several share a workdir; an
 unqualified name means whichever ran last decides which plugin the next one
-enables. Logs are overwritten per run — copy anything you want to keep.
+enables. Logs are overwritten per run — copy anything you want to keep. The
+durable record is the `.jsonl` under `reports/`, which appends.
 
 ---
 
@@ -243,6 +280,7 @@ corpus/race/
     build.py              HIP source to executable
     generate.py           writes mutants.toml
     detector_protocol.py  the detector contract, scoping, scoring
+    compare.py            cross-detector matrix
     adapters/             one module per detector
 
 tests/test_suites/race.py   suite adapter (discover / build / run)

@@ -309,6 +309,52 @@ class RunReport:
         )
 
 
+def record_path(artifact_root: Path, detector: str, target: str) -> Path:
+    """Where one detector's per-case results for one target accumulate."""
+    return artifact_root / "race" / "reports" / f"{detector}-{target}.jsonl"
+
+
+def append_record(path: Path, record: dict[str, Any]) -> None:
+    """
+    Append one case's outcome as a single JSON line.
+
+    Line-at-a-time rather than a report written at session end: pytest-xdist
+    runs cases across several processes with no shared memory, and a run that
+    is interrupted half way should still leave the results it did produce. A
+    single short line opened with O_APPEND is written atomically by the kernel,
+    so concurrent workers interleave whole lines rather than corrupting each
+    other's.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def load_records(path: Path) -> list[dict[str, Any]]:
+    """
+    Read back the per-case lines, keeping only the last result for each case.
+
+    Re-running a subset of the corpus appends rather than truncating, so the
+    same case can appear more than once; the newest line wins, which is what
+    makes an incremental "fix one thing, re-run just that case" loop work.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} does not exist; run the suite with --detector "
+            f"{path.stem.rsplit('-', 1)[0]} first"
+        )
+    by_case: dict[str, dict[str, Any]] = {}
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path}:{lineno}: malformed record: {error}") from error
+        by_case[record["case"]] = record
+    return list(by_case.values())
+
 
 def load_report(path: Path) -> Mapping[str, Any]:
     """Read a run report, rejecting one that does not meet the schema."""

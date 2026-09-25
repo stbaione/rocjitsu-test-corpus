@@ -149,6 +149,7 @@ class Detection:
     resources: frozenset[str] = frozenset()  # resources named, if the tool says
     raw: str = ""  # native report text, kept for failure messages
     command: str = ""  # what was actually invoked, for reproduction
+    millis: float | None = None # wall-clock benchmark in milliseconds
 
 
 @runtime_checkable

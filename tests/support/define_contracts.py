@@ -53,6 +53,8 @@ class RunContext:
     worker_count: int = 1
     # Which race detector the race suite scores against; see --detector.
     detector: str | None = None
+    # Time each detector invocation and record it; see --benchmark.
+    benchmark: bool = False
 
 
 @dataclass

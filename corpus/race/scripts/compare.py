@@ -50,7 +50,7 @@ _CELL = {
 _COUNTLESS = ("skipped", "exempt")
 
 
-def render_cell(record: dict | None) -> str:
+def render_cell(record: dict | None, timed: bool = False) -> str:
     if record is None:
         return "-"
     verdict = _CELL.get(record["verdict"], record["verdict"])
@@ -59,7 +59,24 @@ def render_cell(record: dict | None) -> str:
     count = record.get("mutant_count")
     if count is None:
         count = record.get("baseline_count")
-    return verdict if count is None else f"{verdict} {count}"
+
+    cell = verdict if count is None else f"{verdict} {count}"
+    if not timed:
+        return cell
+
+    millis = record.get("mutant_ms")
+    if millis is None:
+        millis = record.get("baseline_ms")
+    return f"{cell:<9}{'-' if millis is None else f'{millis:.0f}ms'}"
+
+
+def _has_timings(by_detector: dict) -> bool:
+    """True when any record carries a measurement, i.e. --benchmark was used."""
+    return any(
+        record.get("mutant_ms") is not None or record.get("baseline_ms") is not None
+        for results in by_detector.values()
+        for record in results.values()
+    )
 
 
 def main() -> int:
@@ -145,13 +162,10 @@ def main() -> int:
 
 
 def _print_table(rows, detectors, by_detector, all_cases, show_all) -> None:
-    sample = next(
-        (c for _, cells, _ in rows for c in cells if c is not None),
-        None,
-    )
+    timed = _has_timings(by_detector)
     width_case = max([len(r[0].split(".", 2)[-1]) for r in rows] + [len("mutant")]) + 2
     width_res = 9
-    widths = [max(len(d), 12) + 2 for d in detectors]
+    widths = [max(len(d), 18 if timed else 12) + 2 for d in detectors]
 
     header = f"{'mutant':<{width_case}}{'resource':<{width_res}}"
     header += "".join(f"{d:<{w}}" for d, w in zip(detectors, widths))
@@ -162,7 +176,7 @@ def _print_table(rows, detectors, by_detector, all_cases, show_all) -> None:
         short = case.split(".", 2)[-1]
         resource = next((c["resource"] for c in cells if c is not None), "?")
         line = f"{short:<{width_case}}{resource:<{width_res}}"
-        line += "".join(f"{render_cell(c):<{w}}" for c, w in zip(cells, widths))
+        line += "".join(f"{render_cell(c, timed):<{w}}" for c, w in zip(cells, widths))
         print(line)
 
     if not rows:
@@ -176,7 +190,15 @@ def _print_table(rows, detectors, by_detector, all_cases, show_all) -> None:
         ]
         scored = [r for r in results if r["verdict"] in ("detected", "missed")]
         found = sum(1 for r in scored if r["verdict"] == "detected")
-        totals += f"{f'{found}/{len(scored)}':<{width}}"
+        cell = f"{found}/{len(scored)}"
+        if timed:
+            # Summed over the cases that actually ran, so the total is
+            # comparable between columns even when they skipped different sets.
+            measured = [
+                r["mutant_ms"] for r in scored if r.get("mutant_ms") is not None
+            ]
+            cell = f"{cell:<9}{f'{sum(measured) / 1000:.1f}s' if measured else '-'}"
+        totals += f"{cell:<{width}}"
     print(totals)
 
     if not show_all and rows:

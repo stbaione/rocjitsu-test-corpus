@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -96,6 +98,8 @@ def _record(
     *,
     baseline_count: int | None = None,
     mutant_count: int | None = None,
+    baseline_ms: float | None = None,
+    mutant_ms: float | None = None,
     detail: str = "",
 ) -> None:
     """Append this case's outcome for later cross-detector comparison."""
@@ -114,6 +118,8 @@ def _record(
             "verdict": verdict.value,
             "baseline_count": baseline_count,
             "mutant_count": mutant_count,
+            "baseline_ms": baseline_ms,
+            "mutant_ms": mutant_ms,
             "detail": detail,
             **_provenance(context),
         },
@@ -356,6 +362,28 @@ def _artifacts(case: CorpusCase, build_result: BuildResult, workdir: Path) -> Mu
     )
 
 
+def _timed_detect(detector, artifacts: MutantArtifacts, context: RunContext) -> Detection:
+    """
+    Invoke the detector, timing it when ``--benchmark`` is on.
+
+    Measures only the detector call, so the number is what that detector costs
+    on this kernel -- the simulated run plus whatever parsing it does -- and
+    excludes assembling and linking, which are identical whichever detector is
+    selected and would otherwise swamp the difference.
+
+    One sample per case, taken from the run that was happening anyway. That is
+    enough to separate detectors that differ by a factor, which is the question
+    this answers; it is not enough to resolve a few percent.
+    """
+    if not context.benchmark:
+        return detector.detect(artifacts, context.run_wrapper)
+
+    started = time.perf_counter()
+    detection = detector.detect(artifacts, context.run_wrapper)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    return replace(detection, millis=round(elapsed_ms, 3))
+
+
 def _baseline_detection(
     case: CorpusCase,
     build_result: BuildResult,
@@ -372,7 +400,8 @@ def _baseline_detection(
     workdir = cache / BASELINE
     marker = workdir / f".{detector.name}.count"
     if marker.is_file():
-        return Detection(count=int(marker.read_text().strip()))
+        count, _, millis = marker.read_text().strip().partition(" ")
+        return Detection(count=int(count), millis=float(millis) if millis else None)
 
     tools = corpus_build.resolve_toolchain()
     link = detector.needs_execution and not context.skip_all_runs
@@ -384,7 +413,8 @@ def _baseline_detection(
         tools=tools,
         link=link,
     )
-    detection = detector.detect(
+    detection = _timed_detect(
+        detector,
         MutantArtifacts(
             asm=built.asm,
             code_object=built.code_object,
@@ -392,9 +422,11 @@ def _baseline_detection(
             workdir=workdir,
             target=case.target,
         ),
-        context.run_wrapper,
+        context,
     )
-    marker.write_text(str(detection.count))
+    marker.write_text(
+        f"{detection.count}" if detection.millis is None else f"{detection.count} {detection.millis}"
+    )
     return detection
 
 
@@ -409,7 +441,7 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
 
     if mutant == BASELINE:
         try:
-            detection = detector.detect(_artifacts(case, build_result, workdir), context.run_wrapper)
+            detection = _timed_detect(detector, _artifacts(case, build_result, workdir), context)
         except DetectorUnavailable as error:
             _record(case, context, detector, Verdict.SKIPPED, detail=str(error))
             pytest.skip(str(error))
@@ -422,6 +454,7 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
             detector,
             Verdict.DETECTED if clean else Verdict.BASELINE_DIRTY,
             baseline_count=detection.count,
+            baseline_ms=detection.millis,
         )
         assert clean, (
             f"{metadata['kernel']} baseline is not clean: {detector.name} reports "
@@ -446,7 +479,7 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
 
     try:
         baseline = _baseline_detection(case, build_result, context, detector)
-        detection = detector.detect(_artifacts(case, build_result, workdir), context.run_wrapper)
+        detection = _timed_detect(detector, _artifacts(case, build_result, workdir), context)
     except DetectorUnavailable as error:
         _record(case, context, detector, Verdict.SKIPPED, detail=str(error))
         pytest.skip(str(error))
@@ -461,6 +494,8 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
         verdict,
         baseline_count=baseline.count,
         mutant_count=detection.count,
+        baseline_ms=baseline.millis,
+        mutant_ms=detection.millis,
         detail=detection.command,
     )
     if verdict is Verdict.BASELINE_DIRTY:

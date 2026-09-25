@@ -43,6 +43,16 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help=(
+            "Time each detector invocation and record it alongside the verdict, "
+            "so compare.py can show how long each detector takes per kernel. "
+            "Adds no work of its own; it only times what the run already does."
+        ),
+    )
+    parser.addoption(
         "--exclude-suite",
         action="append",
         default=[],

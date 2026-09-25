@@ -148,6 +148,7 @@ def run_context(pytestconfig) -> RunContext:
         ),
         worker_count=_requested_worker_groups(pytestconfig),
         detector=pytestconfig.getoption("detector"),
+        benchmark=pytestconfig.getoption("benchmark"),
     )
 
 

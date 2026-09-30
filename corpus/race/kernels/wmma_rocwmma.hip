@@ -27,7 +27,8 @@
 // Hazard surface:
 //   - global_load → VGPR (load_matrix_sync)
 //   - WMMA writes accumulator VGPRs (mma_sync)
-//   - v_exp_f32 reads accumulator VGPRs immediately (WMMA→trans hazard)
+//   - v_pk_mul_f32 / v_exp_f32 read accumulator VGPRs after v_nop padding
+//     (WMMA→trans, no wait counter)
 //   - global_store reads result VGPRs (trans→store hazard)
 //
 // The launch below is one 32-thread block, which is a whole wave only where
@@ -71,8 +72,8 @@ __global__ void wmma_rocwmma(const __half* __restrict__ A,
     }
 
     // Apply transcendental (exp) directly to accumulator registers.
-    // This creates the critical hazard: mma_sync writes acc VGPRs,
-    // then v_exp_f32 reads them with no intervening wait.
+    // mma_sync writes acc VGPRs, then v_pk_mul_f32 / v_exp_f32 read them
+    // with only v_nop padding, not a wait, in between.
     for (int i = 0; i < acc.num_elements; ++i) {
         acc.x[i] = __expf(acc.x[i]);
     }
@@ -130,13 +131,21 @@ int main() {
     }
     std::cout << "]" << std::endl;
 
-    // Validate: all exp() outputs must be finite and strictly positive. The
-    // output buffer starts zeroed, so accepting zero would let a kernel that
-    // stored nothing report PASS.
+    // A and B are uniform, so every element of the MxN result is the same
+    // K-deep dot product of that value with itself, passed through exp().
+    const float a        = __half2float(h_A[0]);
+    const float b        = __half2float(h_B[0]);
+    const float expected = std::exp(static_cast<float>(K) * a * b);
+
+    // An accumulator that never received the MMA result leaves exp(0) = 1, so
+    // the tolerance must be tighter than expected - 1.
+    const float tolerance = 1e-4f;
+
     bool pass = true;
     for (std::size_t i = 0; i < sizeC; ++i) {
-        if (!std::isfinite(h_C[i]) || h_C[i] <= 0.0f) {
-            std::cerr << "Bad value at " << i << ": " << h_C[i] << std::endl;
+        if (!std::isfinite(h_C[i]) || std::fabs(h_C[i] - expected) > tolerance) {
+            std::cerr << "Bad value at " << i << ": expected " << expected << " +/- " << tolerance
+                      << ", got " << h_C[i] << std::endl;
             pass = false;
             break;
         }

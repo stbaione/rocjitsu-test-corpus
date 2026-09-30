@@ -13,14 +13,16 @@
 // LDS WAR (Write-After-Read) pattern.
 //
 // Each thread reads its slot from shared memory (ds_read, DScnt increments),
-// then writes a new value back to the *same* slot (ds_write) before
-// s_wait_dscnt completes.  The write can corrupt the LDS slot before the
-// in-flight read has captured its data — a classic intra-wave LDS WAR hazard.
+// then writes a new value back to the *same* slot (ds_write).  A write that
+// landed before the in-flight read had captured its data would corrupt the
+// slot — a classic intra-wave LDS WAR hazard.
 //
-// The compiler does NOT insert s_wait_dscnt between the read and the write
-// here because both are in the same thread's sequential flow and it relies
-// on the programmer to insert barriers when needed for cross-wave safety.
-// The plugin should detect the WAR hazard on the write instruction.
+// As compiled the sequence is safe: the write consumes the value the read
+// produced, so the compiler places an LDS wait between the read and the add
+// that feeds the write.  That wait guards the loaded VGPR; the write cannot
+// overtake the read anyway, since DS ops from one wave execute in order.
+// Removing the wait lets the add use a stale VGPR, so the hazard belongs to
+// the mutants rather than to this kernel.
 __global__ void lds_war_pattern(const int* input, int* output, unsigned int n) {
     __shared__ int sdata[256];
     unsigned int   tid = threadIdx.x;
@@ -29,10 +31,10 @@ __global__ void lds_war_pattern(const int* input, int* output, unsigned int n) {
     sdata[tid] = (i < n) ? input[i] : 0;
     __syncthreads();
 
-    // Intra-wave LDS WAR: read sdata[tid] then immediately overwrite sdata[tid]
-    // without waiting for the DS read to complete.
+    // Intra-wave LDS WAR: read sdata[tid] then overwrite sdata[tid].  The
+    // s_wait_dscnt the compiler places between them is the mutation target.
     int val    = sdata[tid];       // ds_read  — DScnt increments
-    sdata[tid] = val + 1;          // ds_write — WAR: same slot, no s_wait_dscnt
+    sdata[tid] = val + 1;          // ds_write — same slot, data from the add
     __syncthreads();
 
     if (tid == 0) {
@@ -45,7 +47,12 @@ int main() {
     constexpr int          threadsPerBlock = 256;
     constexpr int          numBlocks       = arraySize / threadsPerBlock;
 
-    std::vector<int> input(arraySize, 1);
+    // Distinct values per element, so the slot each block reports back is tied
+    // to the input it was filled from rather than to a constant.
+    std::vector<int> input(arraySize);
+    for (unsigned int i = 0; i < arraySize; ++i)
+        input[i] = static_cast<int>(i);
+
     std::vector<int> output(numBlocks, 0);
     int *            d_in, *d_out;
 
@@ -73,8 +80,11 @@ int main() {
     // its slot by 1. The first thread's slot ends at 1+1 = 2; output[b] = 2.
     bool pass = true;
     for (int i = 0; i < numBlocks; ++i) {
-        if (output[i] != 2) {
-            std::cerr << "Mismatch at block " << i << ": expected 2 got " << output[i] << std::endl;
+        // Thread 0 of each block reports its slot after the read-modify-write.
+        int expected = input[i * threadsPerBlock] + 1;
+        if (output[i] != expected) {
+            std::cerr << "Mismatch at block " << i << ": expected " << expected << " got " << output[i]
+                      << std::endl;
             pass = false;
         }
     }

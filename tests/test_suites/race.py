@@ -56,12 +56,68 @@ from detector_protocol import (  # noqa: E402
     DetectorUnavailable,
     MutantArtifacts,
     Verdict,
+    append_record,
     out_of_scope_reason,
+    record_path,
     score,
+    sha256_file,
     validate_tags,
 )
 
 BASELINE = "baseline"
+
+
+def _provenance(context: RunContext) -> dict:
+    """
+    What produced these numbers, so two runs can be told apart.
+
+    The corpus digest alone is not enough to make results comparable: the most
+    interesting comparison is between detectors that live on different branches
+    and therefore different rocjitsu builds. Recording the simulator binary and
+    its mtime lets the compare script say so instead of silently presenting
+    results from two different binaries as though they were one experiment.
+    """
+    wrapper = (context.run_wrapper or "").split()
+    binary = Path(wrapper[0]) if wrapper else None
+    return {
+        "manifest_sha256": sha256_file(CORPUS_ROOT / "mutants.toml"),
+        "simulator": str(binary) if binary else "",
+        "simulator_mtime": (
+            int(binary.stat().st_mtime) if binary and binary.is_file() else 0
+        ),
+    }
+
+
+def _record(
+    case: CorpusCase,
+    context: RunContext,
+    detector,
+    verdict: Verdict,
+    *,
+    baseline_count: int | None = None,
+    mutant_count: int | None = None,
+    detail: str = "",
+) -> None:
+    """Append this case's outcome for later cross-detector comparison."""
+    metadata = case.metadata
+    append_record(
+        record_path(context.artifact_directory, detector.name, case.target),
+        {
+            "case": case.id,
+            "detector": detector.name,
+            "target": case.target,
+            "kernel": metadata["kernel"],
+            "mutant": metadata["mutant"],
+            "kind": metadata["mutation_kind"],
+            "resource": metadata["resource"],
+            "hazard": metadata["hazard"],
+            "verdict": verdict.value,
+            "baseline_count": baseline_count,
+            "mutant_count": mutant_count,
+            "detail": detail,
+            **_provenance(context),
+        },
+    )
 
 
 # --- Discovery ---------------------------------------------------------------
@@ -355,10 +411,19 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
         try:
             detection = detector.detect(_artifacts(case, build_result, workdir), context.run_wrapper)
         except DetectorUnavailable as error:
+            _record(case, context, detector, Verdict.SKIPPED, detail=str(error))
             pytest.skip(str(error))
         except DetectorError as error:
             pytest.fail(str(error))
-        assert detection.count == 0, (
+        clean = detection.count == 0
+        _record(
+            case,
+            context,
+            detector,
+            Verdict.DETECTED if clean else Verdict.BASELINE_DIRTY,
+            baseline_count=detection.count,
+        )
+        assert clean, (
             f"{metadata['kernel']} baseline is not clean: {detector.name} reports "
             f"{detection.count} hazard(s) before anything was mutated.\n"
             f"  command: {detection.command}\n{detection.raw[:2000]}"
@@ -371,21 +436,33 @@ def run(case: CorpusCase, build_result: BuildResult, context: RunContext) -> Non
     # this" apart from "this detector does not cover it".
     if metadata["exempt_reason"]:
         reason = f"exempt: {metadata['exempt_reason']}"
+        _record(case, context, detector, Verdict.EXEMPT, detail=reason)
         pytest.skip(reason)
 
     reason = out_of_scope_reason(detector, metadata["resource"], metadata["hazard"])
     if reason is not None:
+        _record(case, context, detector, Verdict.SKIPPED, detail=reason)
         pytest.skip(reason)
 
     try:
         baseline = _baseline_detection(case, build_result, context, detector)
         detection = detector.detect(_artifacts(case, build_result, workdir), context.run_wrapper)
     except DetectorUnavailable as error:
+        _record(case, context, detector, Verdict.SKIPPED, detail=str(error))
         pytest.skip(str(error))
     except (DetectorError, corpus_build.BuildError) as error:
         pytest.fail(str(error))
 
     verdict = score(baseline, detection)
+    _record(
+        case,
+        context,
+        detector,
+        verdict,
+        baseline_count=baseline.count,
+        mutant_count=detection.count,
+        detail=detection.command,
+    )
     if verdict is Verdict.BASELINE_DIRTY:
         pytest.skip(
             f"{metadata['kernel']} baseline already reports {baseline.count} hazard(s); "
